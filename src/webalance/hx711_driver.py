@@ -1,5 +1,6 @@
 import time
 import json
+import math
 import RPi.GPIO as GPIO
 from statistics import mean, stdev
 import matplotlib.pyplot as plt
@@ -88,6 +89,57 @@ def calibrate_system(load_kg: float, samples=50):
         json.dump(data, f, indent=2)
     return scales
 
+def plot_cog(results, out_prefix="measurement"):
+    # --- Geometry setup ---
+    r = 1.0
+    corner = r / math.sqrt(2)  # √2/2 ≈ 0.707
+    positions = {
+        "HX1": ( corner,  corner),  # Top Right
+        "HX2": ( corner, -corner),  # Bottom Right
+        "HX3": (-corner, -corner),  # Bottom Left
+        "HX4": (-corner,  corner),  # Top Left
+    }
+
+    cog_x, cog_y = [], []
+    for rvals in results:
+        weights = [rvals.get(hx, 0) for hx in positions]
+        total = sum(weights)
+        if total == 0:
+            continue
+        x = sum(w * positions[hx][0] for hx, w in zip(positions, weights)) / total
+        y = sum(w * positions[hx][1] for hx, w in zip(positions, weights)) / total
+        cog_x.append(x)
+        cog_y.append(y)
+
+    # --- Plot ---
+    plt.figure(figsize=(6, 6))
+    ax = plt.gca()
+    # Circle
+    circle = plt.Circle((0, 0), r, color="gray", fill=False)
+    ax.add_artist(circle)
+    # Square
+    square = [
+        positions["HX1"],
+        positions["HX2"],
+        positions["HX3"],
+        positions["HX4"],
+        positions["HX1"],  # close path
+    ]
+    sx, sy = zip(*square)
+    plt.plot(sx, sy, "k--", label="Square")
+
+    # Path of CoG
+    plt.plot(cog_x, cog_y, "r.-", label="CoG path")
+
+    plt.title("Center of Gravity Path")
+    plt.axis("equal")
+    plt.legend()
+    cog_file = f"{out_prefix}_cog.png"
+    plt.savefig(cog_file)
+    plt.close()
+    return cog_file
+
+
 def measure(duration: float, interval=0.1, out_prefix="measurement"):
     """Measure for given duration in seconds and create plots + JSON."""
 
@@ -107,7 +159,7 @@ def measure(duration: float, interval=0.1, out_prefix="measurement"):
             if raw is None:
                 continue
             val = raw - offsets.get(hx["name"], 0)
-            if hx["name"] in scales:
+            if hx["name"] in scales and scales[hx["name"]] != 0:
                 val *= scales[hx["name"]]
             reading[hx["name"]] = val
         results.append(reading)
@@ -128,30 +180,7 @@ def measure(duration: float, interval=0.1, out_prefix="measurement"):
     plt.close()
 
     # --- Plot 2: CoG path ---
-    plt.figure(figsize=(6, 6))
-    square = [(-1, -1), (1, -1), (1, 1), (-1, 1), (-1, -1)]
-    xs, ys = zip(*square)
-    plt.plot(xs, ys, "k--")  # square
-    circle = plt.Circle((0, 0), 1, color="gray", fill=False)
-    plt.gca().add_artist(circle)
-
-    cog_x, cog_y = [], []
-    for r in results:
-        hx1, hx2, hx3, hx4 = [r.get(h["name"], 0) for h in HXs]
-        total = hx1 + hx2 + hx3 + hx4
-        if total == 0:
-            continue
-        x = (hx1 + hx2 - hx3 - hx4) / total
-        y = (hx1 + hx4 - hx2 - hx3) / total
-        cog_x.append(x)
-        cog_y.append(y)
-    plt.plot(cog_x, cog_y, "r.-", label="CoG path")
-    plt.title("Center of Gravity Path")
-    plt.axis("equal")
-    plt.legend()
-    cog_file = f"{out_prefix}_cog.png"
-    plt.savefig(cog_file)
-    plt.close()
+    cog_file = plot_cog(results, out_prefix)
 
     # --- JSON output ---
     json_file = f"{out_prefix}.json"
