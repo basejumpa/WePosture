@@ -1,35 +1,34 @@
 import time
 import json
-import os
+import signal
+import sys
 import RPi.GPIO as GPIO
-import matplotlib.pyplot as plt
+from statistics import mean, stdev
 
-# ----------------------------
-# Pin configuration
-# ----------------------------
-SCK1 = 6   # clock for first pair
-SCK2 = 5   # clock for second pair
-DOUT1 = 26
-DOUT2 = 19
-DOUT3 = 21
-DOUT4 = 20
-
-# Offset storage file
 OFFSETS_FILE = "hx711_offsets.json"
 
-# Setup GPIO
-GPIO.setmode(GPIO.BCM)
-GPIO.setup(SCK1, GPIO.OUT)
-GPIO.setup(SCK2, GPIO.OUT)
-GPIO.setup(DOUT1, GPIO.IN)
-GPIO.setup(DOUT2, GPIO.IN)
-GPIO.setup(DOUT3, GPIO.IN)
-GPIO.setup(DOUT4, GPIO.IN)
+# --- Pin mapping ---
+HXs = [
+    {"name": "HX1", "dout": 26, "sck": 6},   # Top Right
+    {"name": "HX2", "dout": 19, "sck": 6},   # Bottom Right
+    {"name": "HX3", "dout": 21, "sck": 5},   # Bottom Left
+    {"name": "HX4", "dout": 20, "sck": 5},   # Top Left
+]
 
-def read_hx711(dout_pin, sck_pin):
-    """Read one value from HX711 on given DOUT and SCK pins"""
+# --- GPIO setup ---
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+for hx in HXs:
+    GPIO.setup(hx["sck"], GPIO.OUT)
+    GPIO.setup(hx["dout"], GPIO.IN)
+
+def read_hx711(dout_pin, sck_pin, timeout=1.0):
+    """Low-level read from one HX711 channel. Returns int or None if timeout."""
+    start = time.time()
     while GPIO.input(dout_pin) == 1:
-        time.sleep(0.001)
+        if time.time() - start > timeout:
+            return None  # chip not ready
+        time.sleep(0.0001)
 
     count = 0
     for _ in range(24):
@@ -37,133 +36,82 @@ def read_hx711(dout_pin, sck_pin):
         count = (count << 1) | GPIO.input(dout_pin)
         GPIO.output(sck_pin, False)
 
-    # Gain = 128 → 1 extra clock pulse
+    # One more clock pulse: Channel A, Gain=128
     GPIO.output(sck_pin, True)
     GPIO.output(sck_pin, False)
 
-    if count & 0x800000:  # 24-bit signed
+    # Convert signed 24-bit
+    if count & 0x800000:
         count -= 1 << 24
     return count
 
-# ----------------------------
-# HX711 modules
-# ----------------------------
-HXs = [
-    {"name": "HX1", "dout": DOUT1, "sck": SCK1, "values": []},  # Right Top
-    {"name": "HX2", "dout": DOUT2, "sck": SCK1, "values": []},  # Right Bottom
-    {"name": "HX3", "dout": DOUT3, "sck": SCK2, "values": []},  # Left Bottom
-    {"name": "HX4", "dout": DOUT4, "sck": SCK2, "values": []},  # Left Top
-]
+def zero_system(samples=50):
+    """Collect zero offsets and thresholds for all HX711s (with timeouts)."""
+    print("Zeroing... make sure all load cells are unloaded.")
 
-# Square geometry
-R = 1.0
-positions = {
-    "HX1": (+R, +R),
-    "HX2": (+R, -R),
-    "HX3": (-R, -R),
-    "HX4": (-R, +R),
-}
-
-cog_x, cog_y = [], []
-
-
-def zero_system():
-    """Zero the system and store offsets persistently"""
     offsets = {}
-    print("Zeroing... please keep the system unloaded.")
+    thresholds = {}
+
     for hx in HXs:
         vals = []
-        for _ in range(50):  # 50 samples per HX711
-            vals.append(read_hx711(hx["dout"], hx["sck"]))
-        offsets[hx["name"]] = sum(vals) / len(vals)
-        print(f"{hx['name']} zero offset = {offsets[hx['name']]:.2f}")
+        for _ in range(samples):
+            val = read_hx711(hx["dout"], hx["sck"])
+            if val is not None:
+                vals.append(val)
+            time.sleep(0.01)
 
-    # Save to file
-    with open(OFFSETS_FILE, "w") as f:
-        json.dump(offsets, f, indent=2)
-    print(f"Offsets saved to {OFFSETS_FILE}")
-    return offsets
+        if vals:
+            avg = mean(vals)
+            sd = stdev(vals) if len(vals) > 1 else 0.0
+            offsets[hx["name"]] = avg
+            thresholds[hx["name"]] = sd * 3
+            print(f"{hx['name']}: offset={avg:.2f}, threshold={thresholds[hx['name']]:.2f}")
+        else:
+            offsets[hx["name"]] = 0
+            thresholds[hx["name"]] = 0
+            print(f"{hx['name']}: no data (check wiring).")
 
+        # Save progress after each HX
+        with open(OFFSETS_FILE, "w") as f:
+            json.dump({"offsets": offsets, "thresholds": thresholds}, f, indent=2)
 
-def load_offsets():
-    """Load offsets from file or zero if not present"""
-    if os.path.exists(OFFSETS_FILE):
+    return offsets, thresholds
+
+def load_or_zero():
+    """Try to load offsets; if not present, perform zeroing and save."""
+    try:
         with open(OFFSETS_FILE, "r") as f:
-            offsets = json.load(f)
-        print(f"Loaded offsets from {OFFSETS_FILE}: {offsets}")
-        return offsets
-    else:
-        return zero_system()
+            data = json.load(f)
+            offsets = data["offsets"]
+            thresholds = data["thresholds"]
+        print("Loaded stored offsets and thresholds.")
+    except (FileNotFoundError, json.JSONDecodeError):
+        print("No valid offset file found. Starting zeroing...")
+        offsets, thresholds = zero_system()
+        print(f"Offsets saved to {OFFSETS_FILE}")
+    return offsets, thresholds
 
+def cleanup_and_exit(sig=None, frame=None):
+    print("\nCleaning up GPIO and exiting...")
+    GPIO.cleanup()
+    sys.exit(0)
 
-try:
-    # Load or compute offsets
-    zero_offsets = load_offsets()
+# Register graceful exit
+signal.signal(signal.SIGINT, cleanup_and_exit)
+signal.signal(signal.SIGTERM, cleanup_and_exit)
 
-    print("Starting measurements... Press Ctrl+C to stop.")
-    for i in range(200):  # take 200 samples
-        weights, line = [], f"{i}: "
+# --- Main ---
+if __name__ == "__main__":
+    offsets, thresholds = load_or_zero()
+    print("Press weights on load cells to see adjusted values (raw - offset).")
+
+    while True:
+        readings = {}
         for hx in HXs:
             raw = read_hx711(hx["dout"], hx["sck"])
-            val = raw - zero_offsets[hx["name"]]  # apply tare
-            hx["values"].append(val)
-            weights.append((hx["name"], val))
-            line += f"{hx['name']}={val:.0f}  "
-        print(line)
-
-        # Compute CoG
-        sum_w = sum(max(v, 0) for _, v in weights)
-        if sum_w > 0:
-            x = sum(max(v, 0) * positions[n][0] for n, v in weights) / sum_w
-            y = sum(max(v, 0) * positions[n][1] for n, v in weights) / sum_w
-            cog_x.append(x)
-            cog_y.append(y)
-        else:
-            cog_x.append(0)
-            cog_y.append(0)
-
-        time.sleep(0.05)
-
-    # ----------------------------
-    # Plot raw values
-    # ----------------------------
-    plt.figure(figsize=(10, 5))
-    for hx in HXs:
-        plt.plot(hx["values"], label=hx["name"])
-    plt.title("HX711 Raw Values (zeroed)")
-    plt.xlabel("Sample")
-    plt.ylabel("ADC Value (relative)")
-    plt.legend()
-    plt.savefig("hx711_quad_plot.png")
-    print("Saved plot as hx711_quad_plot.png")
-
-    # ----------------------------
-    # Plot CoG trajectory
-    # ----------------------------
-    fig, ax = plt.subplots(figsize=(6, 6))
-    circle = plt.Circle((0, 0), R, color="lightgray", fill=False)
-    ax.add_artist(circle)
-
-    # Draw square
-    square_x = [+R, +R, -R, -R, +R]
-    square_y = [+R, -R, -R, +R, +R]
-    ax.plot(square_x, square_y, "k-")
-
-    # Plot trajectory of CoG
-    ax.plot(cog_x, cog_y, "r-", label="Center of Gravity Path")
-    ax.plot([cog_x[0]], [cog_y[0]], "go", label="Start")
-    ax.plot([cog_x[-1]], [cog_y[-1]], "ro", label="End")
-
-    ax.set_aspect("equal", "box")
-    ax.set_xlim(-R * 1.2, R * 1.2)
-    ax.set_ylim(-R * 1.2, R * 1.2)
-    ax.set_title("Center of Gravity from 4 Load Cells")
-    ax.legend()
-    plt.savefig("hx711_cog_plot.png")
-    print("Saved plot as hx711_cog_plot.png")
-
-except KeyboardInterrupt:
-    print("\nStopped by user (Ctrl+C).")
-finally:
-    GPIO.cleanup()
-    print("GPIO cleaned up. Exiting gracefully.")
+            if raw is None:
+                readings[hx["name"]] = None
+            else:
+                readings[hx["name"]] = raw - offsets.get(hx["name"], 0)
+        print(readings)
+        time.sleep(0.2)
