@@ -1,69 +1,59 @@
-from time import perf_counter
-from hx711_multi import HX711
+import time
 import RPi.GPIO as GPIO
+import matplotlib.pyplot as plt
 
-def main():
+# Pin configuration
+SCK = 6
+DOUT1 = 26
+DOUT2 = 19
 
-    # init GPIO (should be done outside HX711 module in case you are using other GPIO functionality)
-    GPIO.setmode(GPIO.BCM)  # set GPIO pin mode to BCM numbering
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(SCK, GPIO.OUT)
+GPIO.setup(DOUT1, GPIO.IN)
+GPIO.setup(DOUT2, GPIO.IN)
 
-    readings_to_average = 10
-    sck_pin = 6
-    dout_pins = [12,16, 21, 13, 19, 26]
-    weight_multiples = [+1.0, +1.0, +1.0, +1.0, +1.0, +1.0]
+def read_hx711(dout_pin):
+    # Wait for chip ready (DOUT goes low)
+    while GPIO.input(dout_pin) == 1:
+        time.sleep(0.001)
 
-    # create hx711 instance
-    hx711 = HX711(dout_pins=dout_pins,
-                sck_pin=sck_pin,
-                channel_A_gain=128,
-                channel_select='A',
-                all_or_nothing=False,
-                log_level='CRITICAL')
-    # reset ADC, zero it
-    hx711.reset()
-    try:
-        hx711.zero(readings_to_average=readings_to_average*3)
-    except Exception as e:
-        print(e)
-    # uncomment below loop to see raw 2's complement and read integers
-    # for adc in hx711._adcs:
-    #     print(adc.raw_reads)  # these are the 2's complemented values read bitwise from the hx711
-    #     print(adc.reads)  # these are the raw values after being converted to signed integers
-    hx711.set_weight_multiples(weight_multiples=weight_multiples)
+    count = 0
+    for _ in range(24):
+        GPIO.output(SCK, True)
+        count = (count << 1) | GPIO.input(dout_pin)
+        GPIO.output(SCK, False)
 
-    # read until keyboard interrupt
-    try:
-        while True:
-            start = perf_counter()
+    # Gain = 128 → 1 extra clock pulse
+    GPIO.output(SCK, True)
+    GPIO.output(SCK, False)
 
-            # perform read operation, returns signed integer values as delta from zero()
-            # readings aare filtered for bad data and then averaged
-            raw_vals = hx711.read_raw(readings_to_average=readings_to_average)
+    if count & 0x800000:  # negative number
+        count -= 1 << 24
+    return count
 
-            # request weights using multiples set previously with set_weight_multiples()
-            # This function call will not perform a new measurement, it will just use what was acquired during read_raw()
-            weights = hx711.get_weight()
+values1 = []
+values2 = []
 
-            read_duration = perf_counter() - start
-            sample_rate = readings_to_average/read_duration
-            print('\nread duration: {:.3f} seconds, rate: {:.1f} Hz'.format(read_duration, sample_rate))
-            print(
-                'raw',
-                ['{:.3f}'.format(x) if x is not None else None for x in raw_vals])
-            print(' wt',
-                ['{:.3f}'.format(x) if x is not None else None for x in weights])
-            # uncomment below loop to see raw 2's complement and read integers
-            # for adc in hx711._adcs:
-            #     print(adc.raw_reads)  # these are the 2's complemented values read bitwise from the hx711
-            #     print(adc.reads)  # these are the raw values after being converted to signed integers
-    except KeyboardInterrupt:
-        print('Keyboard interrupt..')
-    except Exception as e:
-        print(e)
+try:
+    for i in range(200):  # take 200 samples
+        val1 = read_hx711(DOUT1)
+        val2 = read_hx711(DOUT2)
+        values1.append(val1)
+        values2.append(val2)
+        print(f"{i}: HX1={val1}, HX2={val2}")
+        time.sleep(0.05)
 
-    # cleanup GPIO
+    # Plot both traces
+    plt.plot(values1, label="HX711 #1 (DOUT 26)")
+    plt.plot(values2, label="HX711 #2 (DOUT 19)")
+    plt.title("HX711 Raw Values")
+    plt.xlabel("Sample")
+    plt.ylabel("ADC Value")
+    plt.legend()
+    plt.savefig("hx711_dual_plot.png")
+    print("Saved plot as hx711_dual_plot.png")
+
+except KeyboardInterrupt:
+    print("Stopped by user.")
+finally:
     GPIO.cleanup()
-
-
-if __name__ == "__main__":
-    main()
