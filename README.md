@@ -5,5 +5,13 @@
 Just applied some minor modifications to the example in Getting Started at  https://pypi.org/project/hx711-multi/
 
 ```bash
-(cd src ; poetry run python -m webalance)
+poetry install
+poetry run python -m webalance
 ```
+
+
+- HX1 is Right Top. Weight is positive
+- HX2 is Right Bottom. Weight is positive
+- HX3 is Left Bottom. Weight is positive
+- HX4 is Left Top. Weight is positive
+
