@@ -4,6 +4,7 @@ import signal
 import sys
 import RPi.GPIO as GPIO
 from statistics import mean, stdev
+import matplotlib.pyplot as plt
 
 OFFSETS_FILE = "hx711_offsets.json"
 
@@ -103,9 +104,12 @@ signal.signal(signal.SIGTERM, cleanup_and_exit)
 # --- Main ---
 if __name__ == "__main__":
     offsets, thresholds = load_or_zero()
-    print("Press weights on load cells to see adjusted values (raw - offset).")
+    print("Measuring 200 samples for plots...")
 
-    while True:
+    values = {hx["name"]: [] for hx in HXs}
+    cog_path = []
+
+    for i in range(200):  # take 200 samples
         readings = {}
         for hx in HXs:
             raw = read_hx711(hx["dout"], hx["sck"])
@@ -113,5 +117,51 @@ if __name__ == "__main__":
                 readings[hx["name"]] = None
             else:
                 readings[hx["name"]] = raw - offsets.get(hx["name"], 0)
-        print(readings)
-        time.sleep(0.2)
+                values[hx["name"]].append(readings[hx["name"]])
+        # --- compute center of gravity if all four values valid ---
+        if all(readings[hx["name"]] is not None for hx in HXs):
+            # map to square corners
+            weights = [
+                ("HX1", (1, 1)),   # Top Right
+                ("HX2", (1, -1)),  # Bottom Right
+                ("HX3", (-1, -1)), # Bottom Left
+                ("HX4", (-1, 1)),  # Top Left
+            ]
+            sum_w = sum(abs(readings[name]) for name, _ in weights)
+            if sum_w > 0:
+                cx = sum(readings[name] * pos[0] for name, pos in weights) / sum_w
+                cy = sum(readings[name] * pos[1] for name, pos in weights) / sum_w
+                cog_path.append((cx, cy))
+        time.sleep(0.05)
+
+    # --- Plot 1: Time series ---
+    plt.figure()
+    for name, vals in values.items():
+        plt.plot(vals, label=name)
+    plt.title("HX711 Raw Values (offset corrected)")
+    plt.xlabel("Sample")
+    plt.ylabel("ADC Value")
+    plt.legend()
+    plt.savefig("hx711_timeseries.png")
+    print("Saved hx711_timeseries.png")
+
+    # --- Plot 2: Square-in-circle with COG path ---
+    fig, ax = plt.subplots()
+    circle = plt.Circle((0, 0), 1.0, color="lightgray", fill=False)
+    ax.add_artist(circle)
+    square_x = [1, 1, -1, -1, 1]
+    square_y = [1, -1, -1, 1, 1]
+    ax.plot(square_x, square_y, "k-")
+    if cog_path:
+        xs, ys = zip(*cog_path)
+        ax.plot(xs, ys, "r-", label="COG path")
+        ax.plot(xs[-1], ys[-1], "ro", label="Last COG")
+    ax.set_aspect("equal", "box")
+    ax.set_xlim(-1.2, 1.2)
+    ax.set_ylim(-1.2, 1.2)
+    ax.set_title("Center of Gravity Path")
+    ax.legend()
+    plt.savefig("hx711_cog.png")
+    print("Saved hx711_cog.png")
+
+    cleanup_and_exit()
