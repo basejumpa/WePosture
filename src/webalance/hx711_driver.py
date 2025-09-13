@@ -9,10 +9,10 @@ OFFSETS_FILE = "hx711_offsets.json"
 
 # --- Pin mapping ---
 HXs = [
-    {"name": "HX1", "dout": 26, "sck": 6},   # Top Right
-    {"name": "HX2", "dout": 19, "sck": 6},   # Bottom Right
-    {"name": "HX3", "dout": 21, "sck": 5},   # Bottom Left
-    {"name": "HX4", "dout": 20, "sck": 5},   # Top Left
+    {"name": "HX1", "dout": 19, "sck": 6},   # Top Right
+    {"name": "HX2", "dout": 26, "sck": 6},   # Bottom Right
+    {"name": "HX3", "dout": 20, "sck": 5},   # Bottom Left
+    {"name": "HX4", "dout": 21, "sck": 5},   # Top Left
 ]
 
 # --- GPIO setup ---
