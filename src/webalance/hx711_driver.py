@@ -100,10 +100,11 @@ def plot_cog(results, out_prefix="measurement"):
         "HX4": (-corner,  corner),  # Top Left
     }
 
-    cog_x, cog_y = [], []
+    cog_x, cog_y, total_weights = [], [], []
     for rvals in results:
         weights = [rvals.get(hx, 0) for hx in positions]
         total = sum(weights)
+        total_weights.append(total)
         if total == 0:
             continue
         x = sum(w * positions[hx][0] for hx, w in zip(positions, weights)) / total
@@ -130,6 +131,12 @@ def plot_cog(results, out_prefix="measurement"):
 
     # Path of CoG
     plt.plot(cog_x, cog_y, "r.-", label="CoG path")
+
+    # Embed mean total weight as annotation in the plot
+    if total_weights:
+        scalar_weight = sum(total_weights) / len(total_weights)
+        plt.annotate(f"Mean total weight: {scalar_weight:.2f} kg", xy=(0.5, 0.05), xycoords='axes fraction',
+                     fontsize=12, color='blue', ha='center', va='center', bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="blue", lw=1))
 
     plt.title("Center of Gravity Path")
     plt.axis("equal")
