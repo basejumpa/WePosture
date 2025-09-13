@@ -2,3 +2,8 @@
 
 __pycache__/
 *.__pycache__
+
+hx711_offsets.json
+measurement_cog.png
+measurement_timeseries.png
+measurement.json
