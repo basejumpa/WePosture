@@ -12,6 +12,7 @@ python = "^3.11"
 hx711-multi = "^1.4.1"
 rpi-gpio = "^0.7.1"
 matplotlib = "^3.10.6"
+typer = "^0.17.4"
 
 [build-system]
 requires = ["poetry-core"]
