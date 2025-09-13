@@ -9,8 +9,8 @@ def main():
 
     readings_to_average = 10
     sck_pin = 6
-    dout_pins = [12,16, 20, 21]
-    weight_multiples = [+1.0, +1.0, +1.0, +1.0]
+    dout_pins = [12,16, 21, 13, 19, 26]
+    weight_multiples = [+1.0, +1.0, +1.0, +1.0, +1.0, +1.0]
 
     # create hx711 instance
     hx711 = HX711(dout_pins=dout_pins,
