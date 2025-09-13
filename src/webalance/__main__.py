@@ -1,14 +1,21 @@
 import time
+import json
+import os
 import RPi.GPIO as GPIO
 import matplotlib.pyplot as plt
 
+# ----------------------------
 # Pin configuration
+# ----------------------------
 SCK1 = 6   # clock for first pair
 SCK2 = 5   # clock for second pair
 DOUT1 = 26
 DOUT2 = 19
 DOUT3 = 21
 DOUT4 = 20
+
+# Offset storage file
+OFFSETS_FILE = "hx711_offsets.json"
 
 # Setup GPIO
 GPIO.setmode(GPIO.BCM)
@@ -34,11 +41,13 @@ def read_hx711(dout_pin, sck_pin):
     GPIO.output(sck_pin, True)
     GPIO.output(sck_pin, False)
 
-    if count & 0x800000:
+    if count & 0x800000:  # 24-bit signed
         count -= 1 << 24
     return count
 
-# Define HX711 modules
+# ----------------------------
+# HX711 modules
+# ----------------------------
 HXs = [
     {"name": "HX1", "dout": DOUT1, "sck": SCK1, "values": []},  # Right Top
     {"name": "HX2", "dout": DOUT2, "sck": SCK1, "values": []},  # Right Bottom
@@ -46,30 +55,64 @@ HXs = [
     {"name": "HX4", "dout": DOUT4, "sck": SCK2, "values": []},  # Left Top
 ]
 
-# Square coordinates
+# Square geometry
 R = 1.0
 positions = {
-    "HX1": (+R, +R),  # Right Top
-    "HX2": (+R, -R),  # Right Bottom
-    "HX3": (-R, -R),  # Left Bottom
-    "HX4": (-R, +R),  # Left Top
+    "HX1": (+R, +R),
+    "HX2": (+R, -R),
+    "HX3": (-R, -R),
+    "HX4": (-R, +R),
 }
 
 cog_x, cog_y = [], []
 
+
+def zero_system():
+    """Zero the system and store offsets persistently"""
+    offsets = {}
+    print("Zeroing... please keep the system unloaded.")
+    for hx in HXs:
+        vals = []
+        for _ in range(50):  # 50 samples per HX711
+            vals.append(read_hx711(hx["dout"], hx["sck"]))
+        offsets[hx["name"]] = sum(vals) / len(vals)
+        print(f"{hx['name']} zero offset = {offsets[hx['name']]:.2f}")
+
+    # Save to file
+    with open(OFFSETS_FILE, "w") as f:
+        json.dump(offsets, f, indent=2)
+    print(f"Offsets saved to {OFFSETS_FILE}")
+    return offsets
+
+
+def load_offsets():
+    """Load offsets from file or zero if not present"""
+    if os.path.exists(OFFSETS_FILE):
+        with open(OFFSETS_FILE, "r") as f:
+            offsets = json.load(f)
+        print(f"Loaded offsets from {OFFSETS_FILE}: {offsets}")
+        return offsets
+    else:
+        return zero_system()
+
+
 try:
-    print("Starting 4× HX711 CoG test... Press Ctrl+C to stop.")
-    for i in range(200):
+    # Load or compute offsets
+    zero_offsets = load_offsets()
+
+    print("Starting measurements... Press Ctrl+C to stop.")
+    for i in range(200):  # take 200 samples
         weights, line = [], f"{i}: "
         for hx in HXs:
-            val = read_hx711(hx["dout"], hx["sck"])
+            raw = read_hx711(hx["dout"], hx["sck"])
+            val = raw - zero_offsets[hx["name"]]  # apply tare
             hx["values"].append(val)
             weights.append((hx["name"], val))
-            line += f"{hx['name']}={val}  "
+            line += f"{hx['name']}={val:.0f}  "
         print(line)
 
         # Compute CoG
-        sum_w = sum(max(v, 0) for _, v in weights)  # ignore negatives
+        sum_w = sum(max(v, 0) for _, v in weights)
         if sum_w > 0:
             x = sum(max(v, 0) * positions[n][0] for n, v in weights) / sum_w
             y = sum(max(v, 0) * positions[n][1] for n, v in weights) / sum_w
@@ -81,18 +124,22 @@ try:
 
         time.sleep(0.05)
 
-    # --- Plot time-series of raw values
+    # ----------------------------
+    # Plot raw values
+    # ----------------------------
     plt.figure(figsize=(10, 5))
     for hx in HXs:
         plt.plot(hx["values"], label=hx["name"])
-    plt.title("HX711 Raw Values")
+    plt.title("HX711 Raw Values (zeroed)")
     plt.xlabel("Sample")
-    plt.ylabel("ADC Value")
+    plt.ylabel("ADC Value (relative)")
     plt.legend()
     plt.savefig("hx711_quad_plot.png")
     print("Saved plot as hx711_quad_plot.png")
 
-    # --- Plot CoG on square inside circle
+    # ----------------------------
+    # Plot CoG trajectory
+    # ----------------------------
     fig, ax = plt.subplots(figsize=(6, 6))
     circle = plt.Circle((0, 0), R, color="lightgray", fill=False)
     ax.add_artist(circle)
